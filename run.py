@@ -1,3 +1,5 @@
+import random
+
 import datasets
 from transformers import AutoTokenizer, AutoModelForSequenceClassification, \
     AutoModelForQuestionAnswering, Trainer, TrainingArguments, HfArgumentParser
@@ -47,6 +49,8 @@ def main():
                       help='Limit the number of examples to train on.')
     argp.add_argument('--max_eval_samples', type=int, default=None,
                       help='Limit the number of examples to evaluate on.')
+    argp.add_argument('--adversarial-pct', type=int, default=0,
+                      help='Adversarial dataset percentage mix')
 
     training_args, args = argp.parse_args_into_dataclasses()
 
@@ -71,7 +75,15 @@ def main():
         eval_split = 'validation_matched' if dataset_id == ('glue', 'mnli') else 'validation'
         # Load the raw data
         dataset = datasets.load_dataset(*dataset_id)
-    
+
+        if args.adversarial_pct > 0:
+            adversarial_dataset = datasets.load_dataset("facebook/anli")
+
+            original_train_size = len(adversarial_dataset['train_r3'])
+            num_adversarial_samples = int(original_train_size * (args.adversarial_pct / 100))
+            adversarial_subset = adversarial_dataset["train_r3"].select(random.sample(range(len(adversarial_dataset["train_r3"])), num_adversarial_samples))
+
+
     # NLI models need to have the output label count specified (label 0 is "entailed", 1 is "neutral", and 2 is "contradiction")
     task_kwargs = {'num_labels': 3} if args.task == 'nli' else {}
 
@@ -112,14 +124,21 @@ def main():
         train_dataset = dataset['train']
         if args.max_train_samples:
             train_dataset = train_dataset.select(range(args.max_train_samples))
+        if args.adversarial_pct > 0:
+            train_dataset = datasets.concatenate_datasets([train_dataset, adversarial_subset])
         train_dataset_featurized = train_dataset.map(
             prepare_train_dataset,
             batched=True,
             num_proc=NUM_PREPROCESSING_WORKERS,
             remove_columns=train_dataset.column_names
         )
+        print(f"Training on {len(train_dataset_featurized)} rows")
     if training_args.do_eval:
-        eval_dataset = dataset[eval_split]
+        if args.adversarial_pct == 0:
+            eval_dataset = dataset[eval_split]
+        else:
+            eval_dataset = adversarial_dataset['test_r3']
+            print(f"Evaluating on adversarial_dataset")
         if args.max_eval_samples:
             eval_dataset = eval_dataset.select(range(args.max_eval_samples))
         eval_dataset_featurized = eval_dataset.map(
